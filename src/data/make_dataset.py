@@ -8,6 +8,8 @@ import numpy as np
 import os
 import data.permutation_importance
 import data.input
+import random
+import pandas as pd
 
 logger = set_logger(__name__)
 
@@ -44,6 +46,8 @@ def check_missing_data(df):
         return(np.transpose(output))
     else:
         return(False)
+
+
 
 if __name__ == '__main__':
     pass

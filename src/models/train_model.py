@@ -26,6 +26,7 @@ from sklearn import metrics
 import json
 import ast
 import time
+from src.features.build_features import add_shuffle_data
 from sklearn import linear_model
 import eli5
 from eli5.sklearn import PermutationImportance
@@ -42,8 +43,35 @@ from src.util.log_util import set_logger
 import src.models
 logger = set_logger(__name__)
 
+def augment(x,y,t=2):
+    xs,xn = [],[]
+    for i in range(t):
+        mask = y>0
+        x1 = x[mask].copy()
+        ids = np.arange(x1.shape[0])
+        for c in range(x1.shape[1]):
+            np.random.shuffle(ids)
+            x1[:,c] = x1[ids][:,c]
+        xs.append(x1)
 
-def train_model(X, X_test, y, params, n_fold=5, shuffle_folds=True, model_type='lgb', plot_feature_importance=False,
+    for i in range(t//2):
+        mask = y==0
+        x1 = x[mask].copy()
+        ids = np.arange(x1.shape[0])
+        for c in range(x1.shape[1]):
+            np.random.shuffle(ids)
+            x1[:,c] = x1[ids][:,c]
+        xn.append(x1)
+
+    xs = np.vstack(xs)
+    xn = np.vstack(xn)
+    ys = np.ones(xs.shape[0])
+    yn = np.zeros(xn.shape[0])
+    x = np.vstack([x,xs,xn])
+    y = np.concatenate([y,ys,yn])
+    return x,y
+
+def train_model(X, X_test, y, idx, params, n_fold=5, shuffle_folds=True, model_type='lgb', plot_feature_importance=False,
                 averaging='usual', model=None, folds_random_state=42):
 
 
@@ -61,16 +89,38 @@ def train_model(X, X_test, y, params, n_fold=5, shuffle_folds=True, model_type='
         X_train, X_valid = X.loc[train_index], X.loc[valid_index]
         y_train, y_valid = y[train_index], y[valid_index]
 
+        if model_type == 'lgb_aug':
+            N = 5
+            y_pred_valid, y_pred = 0, 0
+            for i in range(N):
+                X_t, y_t = augment(X_train.values, y_train.values)
+                X_t = pd.DataFrame(X_t)
+                X_t = X_t.add_prefix('var_')
+
+                train_data = lgb.Dataset(X_t, label=y_t)
+                valid_data = lgb.Dataset(X_valid, label=y_valid)
+
+                model = lgb.train(params,
+                                  train_data,
+                                  num_boost_round=1000000,
+                                  valid_sets=[train_data, valid_data],
+                                  verbose_eval=1000,
+                                  early_stopping_rounds=3000)
+                y_pred_valid += model.predict(X_valid)
+                y_pred += model.predict(X_test, num_iteration=model.best_iteration)
+            y_pred_valid /= N
+            y_pred /= N
+
         if model_type == 'lgb':
             train_data = lgb.Dataset(X_train, label=y_train)
             valid_data = lgb.Dataset(X_valid, label=y_valid)
 
             model = lgb.train(params,
                               train_data,
-                              num_boost_round=20000,
+                              num_boost_round=1000000,
                               valid_sets=[train_data, valid_data],
                               verbose_eval=1000,
-                              early_stopping_rounds=200)
+                              early_stopping_rounds=3000)
 
             y_pred_valid = model.predict(X_valid)
             y_pred = model.predict(X_test, num_iteration=model.best_iteration)
@@ -78,7 +128,7 @@ def train_model(X, X_test, y, params, n_fold=5, shuffle_folds=True, model_type='
         if model_type == 'lgb_sklearn':
             model = lgb.LGBMClassifier(**params, n_estimators=20000)
             model.fit(X_train, y_train, eval_set=[(X_train, y_train), (X_valid, y_valid)],
-                      verbose=1000, early_stopping_rounds=200)
+                      verbose=1000, early_stopping_rounds=3000)
 
             y_pred_valid = model.predict_proba(X_valid)[:,1]
             y_pred = model.predict_proba(X_test, num_iteration=model.best_iteration_)[:,1]
